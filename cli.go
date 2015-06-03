@@ -51,6 +51,7 @@ func (cli *CLI) Run(args []string) int {
 
 	if err := flags.Parse(args[1:]); err != nil {
 		fmt.Println(err.Error())
+		return ExitCodeFlagParseError
 	}
 
 	if *version {
