@@ -27,7 +27,7 @@ release:
 		zip ../$$(basename $$platform).zip ./* >/dev/null; \
 		popd >/dev/null; \
 	done
-	@ghr $(VERSION) dist/
+	@ghr -u fullscreen $(VERSION) dist/
 
 clean:
 	@rm -rf dist/
