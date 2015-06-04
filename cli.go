@@ -17,13 +17,17 @@ const (
 	ExitCodeAWSError
 )
 
-const HelpText string = `Usage: sqs-do [options] -- <command> [options]
+const HelpText string = `Usage: sqs-do -queue <url> [options] -- <command> [options]
 
 Options:
   -h        Print this message and exit
-  -q        The queue to listen to
-  -v        Enable verbose output
+  -count    The number of messages to receive (default 1)
+  -hide     Time to keep messages hidden from other subscribers (seconds)
+  -queue    The queue to listen to
+  -region   The region the queue is in
+  -verbose  Enable verbose output
   -version  Print version informtion
+  -wait     Time to wait for new messages (seconds)
 `
 
 type CLI struct {
@@ -36,23 +40,21 @@ func (cli *CLI) Run(args []string) int {
 	flags := flag.NewFlagSet("cFlags", flag.ContinueOnError)
 	flags.SetOutput(cli.Stdout)
 
+	count := flags.Int64("count", 1, "The number of message to receive")
 	help := flags.Bool("h", false, "print help and quit")
-	verbose := flags.Bool("v", false, "print verbose output")
-	version := flags.Bool("version", false, "print version and exit")
-	queue := flags.String("q", "", "the queue to listen on")
+	hide := flags.Int64("hide", 0, "Time to keep messages hidden")
+	queue := flags.String("queue", "", "The queue to listen to")
+	region := flags.String("region", "us-east-1", "The region the queue is in")
+	verbose := flags.Bool("verbose", false, "Enable verbose output")
+	version := flags.Bool("version", false, "Print version information")
+	wait := flags.Int64("wait", 10, "Time to wait for new messages")
 
-	// setup debugging
-	debug := func(format string, a ...interface{}) (int, error) {
-		if *verbose == false {
-			return 0, nil
-		}
-		return fmt.Fprintf(os.Stderr, format, a...)
-	}
-
+	// check flag values
 	if err := flags.Parse(args[1:]); err != nil {
 		fmt.Println(err.Error())
 		return ExitCodeFlagParseError
 	}
+	handlerArgs := flags.Args()
 
 	if *version {
 		fmt.Fprintf(cli.Stdout, "%s\n", Version)
@@ -64,28 +66,44 @@ func (cli *CLI) Run(args []string) int {
 		return ExitCodeOK
 	}
 
-	opt := &sqs.ReceiveMessageInput{
-		QueueURL:          queue,
-		WaitTimeSeconds:   aws.Long(2),
-		VisibilityTimeout: aws.Long(1),
+	if *queue == "" || len(handlerArgs) == 0 {
+		fmt.Fprintf(cli.Stderr, HelpText)
+		return ExitCodeFlagParseError
 	}
-	svc := sqs.New(&aws.Config{Region: "us-east-1"})
-	childArgs := flags.Args()
+
+	// setup debugging
+	debug := func(format string, a ...interface{}) (int, error) {
+		if *verbose == false {
+			return 0, nil
+		}
+		return fmt.Fprintf(os.Stderr, format, a...)
+	}
+
+	opt := &sqs.ReceiveMessageInput{
+		QueueURL:            queue,
+		WaitTimeSeconds:     wait,
+		MaxNumberOfMessages: count,
+	}
+	// override queue default
+	if *hide > 0 {
+		opt.VisibilityTimeout = hide
+	}
+	svc := sqs.New(&aws.Config{Region: *region})
 
 	// setup loop
-	fmt.Fprintf(cli.Stdout, "Listening for messages on %s\n", *queue)
+	debug("Listening for messages on %s\n", *queue)
 	for {
 		resp, err := svc.ReceiveMessage(opt)
-		count := len(resp.Messages)
+		num := len(resp.Messages)
 		if err != nil {
 			fmt.Println(err.Error())
 			return ExitCodeAWSError
 		}
-		if count > 0 {
+		if num > 0 {
 			debug("Received %d message(s)\n", len(resp.Messages))
 		}
 		for i := range resp.Messages {
-			err := handleMessage(resp.Messages[i], childArgs)
+			err := handleMessage(resp.Messages[i], handlerArgs)
 			if err != nil {
 				debug("Handler exited with non-zero exit code")
 			} else {
@@ -102,7 +120,6 @@ func (cli *CLI) Run(args []string) int {
 			}
 		}
 	}
-
 	return ExitCodeOK
 }
 

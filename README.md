@@ -8,7 +8,7 @@ Pass SQS messages to a handler script.
 usage
 =====
 ```shell
-sqs-do -q <QUEUE_URL> -- ./handler.sh
+sqs-do -queue <url> [options] -- <command> [options]
 ```
 
 The handler script will be executed with the following environment variables:
