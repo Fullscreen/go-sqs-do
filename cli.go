@@ -131,7 +131,7 @@ func handleMessage(message *sqs.Message, args []string) error {
 	// setup environment
 	env := os.Environ()
 	env = append(env,
-		fmt.Sprintf("SQS_BODY=\"%s\"", *message.Body),
+		fmt.Sprintf("SQS_BODY='%s'", *message.Body),
 		fmt.Sprintf("SQS_MESSAGE_ID=%s", *message.MessageID),
 		fmt.Sprintf("SQS_RECEIPT_HANDLE=%s", *message.ReceiptHandle),
 	)
