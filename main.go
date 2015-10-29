@@ -103,7 +103,7 @@ func (cli *CLI) Run(args []string) int {
 			debug("Received %d message(s)\n", len(resp.Messages))
 		}
 		for i := range resp.Messages {
-			err := handleMessage(resp.Messages[i], handlerArgs)
+			err := handleMessage(resp.Messages[i], handlerArgs, *region)
 			if err != nil {
 				debug("Handler exited with non-zero exit code")
 			} else {
@@ -124,7 +124,7 @@ func (cli *CLI) Run(args []string) int {
 }
 
 // handle incoming messages
-func handleMessage(message *sqs.Message, args []string) error {
+func handleMessage(message *sqs.Message, args []string, region string) error {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -134,6 +134,7 @@ func handleMessage(message *sqs.Message, args []string) error {
 		fmt.Sprintf("SQS_BODY=%s", *message.Body),
 		fmt.Sprintf("SQS_MESSAGE_ID=%s", *message.MessageID),
 		fmt.Sprintf("SQS_RECEIPT_HANDLE=%s", *message.ReceiptHandle),
+		fmt.Sprintf("SQS_REGION=%s", region),
 	)
 	cmd.Env = env
 
