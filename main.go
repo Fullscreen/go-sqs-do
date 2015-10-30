@@ -42,7 +42,7 @@ func (cli *CLI) Run(args []string) int {
 	flags.SetOutput(cli.Stdout)
 
 	count := flags.Int64("count", 1, "The number of message to receive")
-	concurrent := flags.Int("concurrent", 1, "The number of messages to process in parallel")
+	concurrency := flags.Int("concurrency", 1, "The number of messages to process in parallel")
 	help := flags.Bool("h", false, "print help and quit")
 	hide := flags.Int64("hide", 0, "Time to keep messages hidden")
 	queue := flags.String("queue", "", "The queue to listen to")
@@ -93,13 +93,13 @@ func (cli *CLI) Run(args []string) int {
 	svc := sqs.New(&aws.Config{Region: *region})
 
 	// create channel queue
-	c := make(chan *sqs.Message, *concurrent-1)
+	c := make(chan *sqs.Message, *concurrency-1)
 
 	// setup loop
 	debug("Listening for messages on %s\n", *queue)
 
 	// setup workers
-	for i := 0; i < *concurrent; i++ {
+	for i := 0; i < *concurrency; i++ {
 		go func() {
 			for {
 				msg := <-c
