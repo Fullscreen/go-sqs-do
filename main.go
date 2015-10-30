@@ -20,14 +20,15 @@ const (
 const HelpText string = `Usage: sqs-do -queue <url> [options] -- <command> [options]
 
 Options:
-  -h        Print this message and exit
-  -count    The number of messages to receive (default 1)
-  -hide     Time to keep messages hidden from other subscribers (seconds)
-  -queue    The queue to listen to
-  -region   The region the queue is in
-  -verbose  Enable verbose output
-  -version  Print version informtion
-  -wait     Time to wait for new messages (seconds)
+  -h           Print this message and exit
+  -count       The number of messages to receive (default 1)
+  -concurrency The number of messages to process in parallel
+  -hide        Time to keep messages hidden from other subscribers (seconds)
+  -queue       The queue to listen to
+  -region      The region the queue is in
+  -verbose     Enable verbose output
+  -version     Print version informtion
+  -wait        Time to wait for new messages (seconds)
 `
 
 type CLI struct {
@@ -41,6 +42,7 @@ func (cli *CLI) Run(args []string) int {
 	flags.SetOutput(cli.Stdout)
 
 	count := flags.Int64("count", 1, "The number of message to receive")
+	concurrent := flags.Int("concurrent", 1, "The number of messages to process in parallel")
 	help := flags.Bool("h", false, "print help and quit")
 	hide := flags.Int64("hide", 0, "Time to keep messages hidden")
 	queue := flags.String("queue", "", "The queue to listen to")
@@ -90,34 +92,48 @@ func (cli *CLI) Run(args []string) int {
 	}
 	svc := sqs.New(&aws.Config{Region: *region})
 
+	// create channel queue
+	c := make(chan *sqs.Message, *concurrent-1)
+
 	// setup loop
 	debug("Listening for messages on %s\n", *queue)
+
+	// setup workers
+	for i := 0; i < *concurrent; i++ {
+		go func() {
+			for {
+				msg := <-c
+				err := handleMessage(msg, handlerArgs, *region)
+				if err != nil {
+					debug("Handler exited with non-zero exit code")
+				} else {
+					// remove the message
+					delopt := &sqs.DeleteMessageInput{
+						QueueURL:      queue,
+						ReceiptHandle: msg.ReceiptHandle,
+					}
+					if _, err := svc.DeleteMessage(delopt); err != nil {
+						fmt.Fprintln(cli.Stderr, "Failed to delete message")
+					} else {
+						debug("Deleted message with ID: %s", *msg.MessageID)
+					}
+				}
+			}
+		}()
+	}
+
+	// start fetching messages
 	for {
 		resp, err := svc.ReceiveMessage(opt)
-		num := len(resp.Messages)
 		if err != nil {
 			fmt.Println(err.Error())
 			return ExitCodeAWSError
 		}
-		if num > 0 {
+		if len(resp.Messages) > 0 {
 			debug("Received %d message(s)\n", len(resp.Messages))
 		}
 		for i := range resp.Messages {
-			err := handleMessage(resp.Messages[i], handlerArgs, *region)
-			if err != nil {
-				debug("Handler exited with non-zero exit code")
-			} else {
-				// remove the message
-				delopt := &sqs.DeleteMessageInput{
-					QueueURL:      queue,
-					ReceiptHandle: resp.Messages[i].ReceiptHandle,
-				}
-				if _, err := svc.DeleteMessage(delopt); err != nil {
-					fmt.Fprintln(cli.Stderr, "Failed to delete message")
-				} else {
-					debug("Delete message with ID: %s", *resp.Messages[i].MessageID)
-				}
-			}
+			c <- resp.Messages[i]
 		}
 	}
 	return ExitCodeOK
