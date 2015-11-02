@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"io"
 	"os"
-	"os/exec"
+	"sync"
 )
 
 const (
@@ -33,6 +33,19 @@ Options:
 
 type CLI struct {
 	Stdout, Stderr io.Writer
+}
+
+type Job struct {
+	Command []string
+	Error   error
+	Message *sqs.Message
+	Queue   *string
+	Region  *string
+}
+
+type Jobs struct {
+	running int
+	cond    *sync.Cond
 }
 
 // invoke the cli with args
@@ -92,68 +105,82 @@ func (cli *CLI) Run(args []string) int {
 	}
 	svc := sqs.New(&aws.Config{Region: *region})
 
-	// create channel queue
-	c := make(chan *sqs.Message, *concurrency-1)
+	// track number of running jobs
+	jobs := &Jobs{
+		running: 0,
+		cond:    &sync.Cond{L: &sync.Mutex{}}}
+
+	// create queue and result channels
+	results := make(chan *Job)
+	jobQueue := make(chan *Job, *concurrency-1)
 
 	// setup loop
 	debug("Listening for messages on %s\n", *queue)
 
 	// setup workers
 	for i := 0; i < *concurrency; i++ {
-		go func() {
-			for {
-				msg := <-c
-				err := handleMessage(msg, handlerArgs, *region)
-				if err != nil {
-					debug("Handler exited with non-zero exit code")
+		worker := &Worker{
+			Command:  handlerArgs,
+			JobQueue: jobQueue,
+			Results:  results}
+		go worker.Start()
+	}
+
+	// watch responses
+	go func() {
+		for {
+			result := <-results
+			if result.Error != nil {
+				debug("Handler exited with non-zero exit code for ID: %s", *result.Message.MessageID)
+			} else {
+				// remove the message
+				delopt := &sqs.DeleteMessageInput{
+					QueueURL:      result.Queue,
+					ReceiptHandle: result.Message.ReceiptHandle,
+				}
+				if _, err := svc.DeleteMessage(delopt); err != nil {
+					fmt.Fprintln(cli.Stderr, "Failed to delete message")
 				} else {
-					// remove the message
-					delopt := &sqs.DeleteMessageInput{
-						QueueURL:      queue,
-						ReceiptHandle: msg.ReceiptHandle,
-					}
-					if _, err := svc.DeleteMessage(delopt); err != nil {
-						fmt.Fprintln(cli.Stderr, "Failed to delete message")
-					} else {
-						debug("Deleted message with ID: %s", *msg.MessageID)
-					}
+					debug("Deleted message with ID: %s\n", *result.Message.MessageID)
 				}
 			}
-		}()
-	}
+			jobs.cond.L.Lock()
+			jobs.running--
+			jobs.cond.L.Unlock()
+			jobs.cond.Signal()
+		}
+	}()
 
 	// start fetching messages
 	for {
+		// stop fetching messages to avoid refetching if the concurrency
+		// limit has been reached
+		jobs.cond.L.Lock()
+		for jobs.running >= *concurrency {
+			jobs.cond.Wait()
+		}
+		jobs.cond.L.Unlock()
+
 		resp, err := svc.ReceiveMessage(opt)
 		if err != nil {
 			fmt.Println(err.Error())
 			return ExitCodeAWSError
 		}
-		if len(resp.Messages) > 0 {
-			debug("Received %d message(s)\n", len(resp.Messages))
-		}
+
+		// update the running job count
+		jobs.cond.L.Lock()
+		jobs.running += len(resp.Messages)
+		jobs.cond.L.Unlock()
+
+		// push each message onto the job queue
 		for i := range resp.Messages {
-			c <- resp.Messages[i]
+			debug("Receieved message with ID: %s\n", *resp.Messages[i].MessageID)
+
+			jobQueue <- &Job{
+				Command: handlerArgs,
+				Message: resp.Messages[i],
+				Queue:   queue,
+				Region:  region}
 		}
 	}
-	return ExitCodeOK
-}
-
-// handle incoming messages
-func handleMessage(message *sqs.Message, args []string, region string) error {
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	// setup environment
-	env := os.Environ()
-	env = append(env,
-		fmt.Sprintf("SQS_BODY=%s", *message.Body),
-		fmt.Sprintf("SQS_MESSAGE_ID=%s", *message.MessageID),
-		fmt.Sprintf("SQS_RECEIPT_HANDLE=%s", *message.ReceiptHandle),
-		fmt.Sprintf("SQS_REGION=%s", region),
-	)
-	cmd.Env = env
-
-	cmd.Start()
-	return cmd.Wait()
 }
